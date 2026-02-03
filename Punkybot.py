@@ -99,6 +99,39 @@ Punkybot - Votre assistant Discord
         print(f"Erreur lors de l'envoi d'email : {e}")
         return False
 
+# === GESTION DES EMAILS ===
+# Fichier de stockage des emails par ID Discord
+EMAILS_FILE = "emails.json"
+
+# Email par défaut (toujours notifié)
+DEFAULT_EMAIL = "emmanuel.goitia@gmail.com"
+
+def load_emails():
+    """Charge les emails depuis emails.json, retourne un dict vide si erreur."""
+    if not os.path.exists(EMAILS_FILE):
+        print("Aucun fichier emails.json trouvé, démarrage avec dict vide.")
+        return {}
+    try:
+        with open(EMAILS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            print(f"Chargé {len(data)} emails")
+            return data
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"Erreur lors du chargement de emails.json: {e}. Dict vide utilisé.")
+        return {}
+
+def save_emails():
+    """Sauvegarde les emails dans emails.json."""
+    try:
+        with open(EMAILS_FILE, "w", encoding="utf-8") as f:
+            json.dump(emails, f, ensure_ascii=False, indent=2)
+        print(f"Sauvegardé {len(emails)} emails")
+    except IOError as e:
+        print(f"Erreur lors de la sauvegarde des emails: {e}")
+
+# Charge les emails au démarrage
+emails = load_emails()
+
 # === ÉVÉNEMENT : CONNEXION RÉUSSIE ===
 # Décorateur @bot.event pour définir un gestionnaire d'événement
 # on_ready() est appelé quand le bot est connecté et prêt
@@ -305,24 +338,67 @@ def save_planning():
 # Charge le planning au démarrage du bot
 planning = load_planning()
 
+# === COMMANDE : !setemail ===
+# Enregistre l'email de l'utilisateur dans emails.json
+@bot.command()
+async def setemail(ctx, email: str = None):
+    if email is None:
+        await ctx.send("Usage : `!setemail <ton_email>`\nExemple : `!setemail exemple@gmail.com`")
+        return
+    
+    # Validation simple de l'email
+    if "@" not in email or "." not in email:
+        await ctx.send("❌ Email invalide. L'email doit contenir un @ et un point.")
+        return
+    
+    # Stocke l'email avec l'ID Discord comme clé
+    user_id = str(ctx.author.id)
+    emails[user_id] = email
+    save_emails()
+    
+    await ctx.send(f"✅ Email enregistré pour **{ctx.author.display_name}** : {email}")
+
 # === COMMANDE : !plan ===
-# Planifie un événement avec date/heure et email
-# Format : !plan "<événement>" <email>
+# Planifie un événement avec date/heure et mentions Discord
+# Format : !plan "<événement>" @mention1 [@mention2 ...] ou !plan "<événement>" email
 @bot.command()
 async def plan(ctx, *, args: str = None):
     # Vérifie que des arguments sont fournis
     if args is None:
-        await ctx.send('Usage : `!plan "<événement avec date>" <email>`\nExemple : `!plan "samedi 15h30 cours Python" alessandro@exemple.com`')
+        await ctx.send('Usage : `!plan "<événement avec date>" @utilisateur1 [@utilisateur2 ...]`\nExemple : `!plan "samedi 15h30 cours Python" @Alessandro @Emmanuel`')
         return
     
-    # Parse les arguments : extrait le texte entre guillemets et l'email
-    match = re.match(r'"([^"]+)"\s+(\S+@\S+)', args)
+    # Parse les arguments : extrait le texte entre guillemets
+    match = re.match(r'"([^"]+)"(.*)$', args)
     if not match:
-        await ctx.send('Format invalide. Utilisez : `!plan "<événement>" <email>`')
+        await ctx.send('Format invalide. Utilisez : `!plan "<événement>" @utilisateur`')
         return
     
     event_text = match.group(1)
-    email = match.group(2)
+    rest = match.group(2).strip()
+    
+    # Collecte les emails des mentions
+    event_emails = []
+    missing_emails = []
+    
+    # Vérifie s'il y a des mentions Discord
+    if ctx.message.mentions:
+        for user in ctx.message.mentions:
+            user_id = str(user.id)
+            if user_id in emails:
+                event_emails.append(emails[user_id])
+            else:
+                missing_emails.append(user.display_name)
+    # Sinon, vérifie si c'est un email direct (ancien format)
+    elif "@" in rest and "." in rest:
+        email_match = re.search(r'(\S+@\S+\.\S+)', rest)
+        if email_match:
+            event_emails.append(email_match.group(1))
+    
+    # Ajoute toujours l'email par défaut s'il existe dans emails.json
+    default_in_emails = DEFAULT_EMAIL in emails.values()
+    if default_in_emails and DEFAULT_EMAIL not in event_emails:
+        event_emails.append(DEFAULT_EMAIL)
     
     # Parse la date/heure depuis le texte de l'événement
     try:
@@ -337,7 +413,7 @@ async def plan(ctx, *, args: str = None):
         "event": event_text,
         "date": parsed_date.isoformat() if parsed_date else None,
         "date_display": date_str,
-        "email": email
+        "emails": event_emails
     }
     
     # Ajoute au planning et sauvegarde
@@ -351,10 +427,19 @@ async def plan(ctx, *, args: str = None):
         color=discord.Color.blue()
     )
     embed.add_field(name="Date", value=date_str, inline=True)
-    embed.add_field(name="Email", value=email, inline=True)
-    embed.set_footer(text="Rappel planifié → email envoyé")
+    
+    if event_emails:
+        embed.add_field(name="Emails", value="\n".join(event_emails), inline=True)
+    else:
+        embed.add_field(name="Emails", value="Aucun", inline=True)
+    
+    embed.set_footer(text="Rappel planifié → email envoyé à l'heure")
     
     await ctx.send(embed=embed)
+    
+    # Avertit si des mentions n'ont pas d'email
+    if missing_emails:
+        await ctx.send(f"⚠️ Aucun email trouvé pour : {', '.join(missing_emails)}. Utilisez `!setemail` pour enregistrer leur email.")
 
 # === TÂCHE DE RAPPEL AUTOMATIQUE ===
 # Vérifie toutes les heures si un événement est dans moins d'1 heure
@@ -399,10 +484,15 @@ async def check_reminders():
                     else:
                         print(f"Rappel (pas de salon configuré) : {event['event']}")
                     
-                    # Envoie l'email de rappel si configuré
-                    if event.get("email"):
+                    # Envoie les emails de rappel
+                    event_emails = event.get("emails", [])
+                    # Compatibilité avec l'ancien format (email unique)
+                    if not event_emails and event.get("email"):
+                        event_emails = [event["email"]]
+                    
+                    for recipient_email in event_emails:
                         send_reminder_email(
-                            event["email"],
+                            recipient_email,
                             event["event"],
                             event.get("date_display", event_date.strftime("%d/%m/%Y à %H:%M"))
                         )
@@ -430,4 +520,3 @@ async def before_check_reminders():
 # Lance le bot avec le token récupéré
 # Cette ligne bloque l'exécution et maintient le bot en ligne
 bot.run(TOKEN)
-

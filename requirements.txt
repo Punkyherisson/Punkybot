@@ -12,4 +12,8 @@ yarl==1.18.3
 aiohttp
 discord.py
 python-dotenv
+<<<<<<< HEAD
 python-dateutil
+=======
+python-dateutil
+>>>>>>> 8ff9584d56a47a4739074e06f0689e5da1b5b1d1
