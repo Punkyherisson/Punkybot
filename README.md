@@ -16,3 +16,4 @@ Commands
 Recent Changes
 2025-12-26: Initial setup in Replit environment
 Specifications of the BOT need to be reworked
+2026-02-08: Define in a separate document the ideal BOT I want to develop but still keep this one in Replit.
